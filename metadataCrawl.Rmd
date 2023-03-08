@@ -1,0 +1,75 @@
+---
+title: "metadataCrawl"
+author: "Jared Hendrickson"
+date: "2023-03-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clear workspace and load r packages, include=FALSE}
+
+rm(list = ls())
+
+library(tidyverse)
+library(synapser)
+
+# log into Synapse
+
+synLogin()
+
+```
+
+```{python}
+
+import synapseclient
+import pandas as pd
+syn = synapseclient.Synapse()
+
+syn.login(authToken = "***")
+
+query = syn.tableQuery("SELECT * FROM syn11346063.34 WHERE ( ( \"metadataType\" = 'assay' OR \"metadataType\" = 'biospecimen' OR \"metadataType\" = 'individual' ) AND ( \"study\" HAS ( 'Jax.IU.Pitt_APP.PS1', 'MODEL-AD_JAX_GWAS_Gene_Survey', 'UCI_5XFAD', 'Jax.IU.Pitt_APOE4.Trem2.R47H', 'UCI_hAbeta_KI', 'Jax.IU.Pitt_PrimaryScreen', 'Jax.IU.Pitt_StrainValidation', 'Jax.IU.Pitt_hTau_Trem2', 'Jax.IU.Pitt_5XFAD', 'UCI_3xTg-AD', 'UCI_PrimaryScreen', 'UCI_Trem2-R47H_NSS', 'UCI_Trem2_Cuprizone' ) ) )")
+
+metadataManifest = query.asDataFrame()
+
+metadataManifest.to_csv('metadataManifestModelAD.csv', index=False)
+
+```
+```{r}
+
+metadataManifestModelAD <- read.csv("metadataManifestModelAD.csv")
+
+biospecimenData <- metadataManifestModelAD %>%
+  filter(str_detect(name, "biospecimen")) %>%
+  select(id, study) %>%
+  rename(biospecimenSynID = id)
+
+individualData <- metadataManifestModelAD %>%
+  filter(str_detect(name, "individual")) %>%
+  select(id, study) %>%
+  rename(individualSynID = id)
+
+map <- inner_join(biospecimenData, individualData, by = "study")
+
+fieldTestsBiospecimen <- c("tissue")
+fieldTestsIndividual <- c("individualCommonGenotype", "sex", "ageDeath", "ageDeathUnits")
+
+verifyFields <- function(fieldstoTest, synID) {
+  fileEntity <- synGet(synID)
+  table <- read.csv(fileEntity$path)
+  
+  return(setdiff(fieldstoTest, colnames(table)))
+}
+
+map$biospecimenTest <- sapply(map$biospecimenSynID, function(x) verifyFields(fieldTestsBiospecimen, x))
+map$individualTest <- sapply(map$individualSynID, function(x) verifyFields(fieldTestsIndividual, x))
+
+map$biospecimenTest  <- sapply(map$biospecimenTest, function(x) paste(x, collapse = ","))
+map$individualTest  <- sapply(map$individualTest, function(x) paste(x, collapse = ","))
+
+write.csv(map, "missingMetadataModelADStudies.csv")
+
+```
+

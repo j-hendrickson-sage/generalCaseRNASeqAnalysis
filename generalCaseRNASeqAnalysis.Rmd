@@ -1,0 +1,361 @@
+---
+title: "generalCaseRNASeqAnalysis"
+author: "Jared Hendrickson"
+date: "2023-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clear workspace and load r packages, include=FALSE}
+
+rm(list = ls())
+
+library(tidyverse)
+library(DESeq2)
+library(glue)
+library(synapser)
+
+# log into Synapse
+
+synLogin()
+
+```
+
+```{r samplesheet preparation in Nextflow}
+
+studiesRepresented <- c("Jax.IU.Pitt_APP.PS1", "MODEL-AD_JAX_GWAS_Gene_Survey", "UCI_5XFAD", "Jax.IU.Pitt_APOE4.Trem2.R47H", "UCI_hAbeta_KI", "Jax.IU.Pitt_PrimaryScreen", "Jax.IU.Pitt_StrainValidation", "Jax.IU.Pitt_hTau_Trem2", "Jax.IU.Pitt_5XFAD", "UCI_3xTg-AD", "UCI_PrimaryScreen")
+
+y <- paste0("'", studiesRepresented, "'")
+x <- paste(y, collapse = ",")
+
+input <- synTableQuery(glue("select * from syn11346063 WHERE (\"study\" HAS ({x})) AND (\"assay\" HAS ('rnaSeq')) AND (\"fileFormat\" = 'fastq')"))
+
+data <- read.csv(input$filepath)
+
+# sanity checks
+
+data$name %>%
+  length()
+
+data$name %>%
+  unique() %>%
+  length()
+
+
+data$specimenID %>%
+  unique() %>%
+  length()
+
+data$individualID %>%
+  unique() %>%
+  length()
+
+# some wrangling/testing
+
+test <- data %>%
+  filter(!str_detect(name, "R")) %>%
+  select(name) %>%
+  mutate(name = name %>% str_replace_all("_1", "_R1")) %>%
+  mutate(name = name %>% str_replace_all("_2", "_R2"))
+
+# create map between original names and RNAseq pipeine acceptable names
+
+neededData <- data %>%
+  select(sample = specimenID, name, id) %>%
+  mutate(OriginalSample = sample) %>%
+  mutate(sample = sample %>% str_remove_all(",") %>% str_remove_all("\\(") %>% str_remove_all("\\)"))
+
+write.csv(neededData, "neededData.csv", row.names = FALSE)
+
+neededData <- neededData %>%
+  select(sample, name, id)
+
+fastq1 <- neededData %>%
+  filter(str_detect(name, "R1|_1\\.")) %>%
+  mutate(fastq1 = paste0("syn://", id)) %>%
+  select(sample, fastq1)
+
+fastq2 <- neededData %>%
+  filter(str_detect(name, "R2|_2\\.")) %>%
+  mutate(fastq2 = paste0("syn://", id)) %>%
+  select(sample, fastq2)
+
+sampleSheet <- left_join(fastq1, fastq2, by = "sample") %>%
+  mutate(strandedness = "auto") %>%
+  dplyr::rename(fastq_1 = fastq1, fastq_2 = fastq2)
+
+write.csv(sampleSheet, "studyManifestSampleSheet.csv", row.names = FALSE)
+
+```
+
+
+```{r load RSEM counts from nf-core rnaseq pipeline}
+
+counts <- read.csv("RNAseqCountsTable.csv")
+originalNameMap <- read.csv("neededData.csv")
+
+```
+
+```{r functions to transform specimenIDs in counts matrix to inputted specimenIDs}
+
+trimX <- function(specimenID) {
+  if(substr(specimenID, 1, 1) == "X") {
+    return(substr(specimenID, 2, nchar(specimenID)))
+  }
+  else {
+    return(specimenID)
+  }
+}
+
+replacePeriod <- function(specimenID) {
+  return(str_replace(specimenID, "\\.", "-"))
+}
+
+```
+
+```{r checks}
+
+countMap <- data.frame(Nextflow_specimenIDs = colnames(counts), inputSpecimenIDS = NA)
+
+countMap <- countMap %>%
+  filter(!(Nextflow_specimenIDs %in% c("transcript_id", "gene_id")))
+
+for(i in 1:nrow(countMap)) {
+  countMap[i, "inputSpecimenIDS"] <- countMap[i, "Nextflow_specimenIDs"] %>% 
+    trimX() %>% 
+    replacePeriod()
+}
+
+# sanity checks
+
+intersect(countMap$inputSpecimenIDS, originalNameMap$sample) %>%
+  length()
+
+setdiff(countMap$inputSpecimenIDS, originalNameMap$sample) %>%
+  length()
+
+setdiff(originalNameMap$sample, countMap$inputSpecimenIDS) %>%
+  length()
+
+# future development: sanity check fastq specimen ids and biospecimen specimen ids
+
+```
+
+```{python pull joined metadata}
+
+import synapseclient
+import pandas as pd
+syn = synapseclient.Synapse()
+
+syn.login(authToken = "***")
+
+query = syn.tableQuery("SELECT * FROM syn11346063.34 WHERE ( ( \"metadataType\" = 'assay' OR \"metadataType\" = 'biospecimen' OR \"metadataType\" = 'individual' ) AND ( \"study\" HAS ( 'Jax.IU.Pitt_APP.PS1', 'MODEL-AD_JAX_GWAS_Gene_Survey', 'UCI_5XFAD', 'Jax.IU.Pitt_APOE4.Trem2.R47H', 'UCI_hAbeta_KI', 'Jax.IU.Pitt_PrimaryScreen', 'Jax.IU.Pitt_StrainValidation', 'Jax.IU.Pitt_hTau_Trem2', 'Jax.IU.Pitt_5XFAD', 'UCI_3xTg-AD', 'UCI_PrimaryScreen' ) ) )")
+metadataManifest = query.asDataFrame()
+
+def getDf (filename, metadataManifest):
+  synid = metadataManifest[metadataManifest['name'] == filename]['id'].values[0]
+  entity = syn.get(synid)
+  df = pd.read_csv(entity.path, sep=",", dtype=str)
+  return(df)
+
+def joinMetadata (biospecimenName, individualName, metadataManifest):
+
+  biospecimen_metadata_df = getDf(biospecimenName, metadataManifest)
+  individual_human_metadata_df = getDf(individualName, metadataManifest)
+
+  return(pd.merge(biospecimen_metadata_df, individual_human_metadata_df, on="individualID"))
+
+
+joinedMetadata = joinMetadata(biospecimenName="UCI_3xTg-AD_biospecimen_metadata.csv", individualName="UCI_3xTg-AD_individual_metadata.csv", metadataManifest=metadataManifest)
+
+joinedMetadata.to_csv('UCI_3xTg-AD_joinedMetadata.csv', index=False)
+
+```
+```{r load metadata}
+
+metadata <- read.csv("UCI_3xTg-AD_joinedMetadata.csv", stringsAsFactors = FALSE)
+
+```
+
+```{r general intersect tests}
+
+# should match number of rows in assay/rnaseq metadata
+# p adjust (check)
+
+intersect(metadata$specimenID, countMap$inputSpecimenIDS)
+
+intersect(metadata$specimenID, countMap$inputSpecimenIDS) %>% length()
+
+```
+
+```{r only include metadata that we have rnaseq data for}
+
+metadataRNASeqOnly <- metadata %>%
+  filter(specimenID %in% countMap$inputSpecimenIDS)
+
+```
+
+```{r reduce counts matrix to study samples only}
+
+filtCountMap <- countMap %>%
+  filter(inputSpecimenIDS %in% metadataRNASeqOnly$specimenID)
+
+counts_reduced_to_study <- counts %>%
+  select(transcript_id, gene_id, filtCountMap$Nextflow_specimenIDs)
+
+```
+
+```{r prepare counts}
+
+samples <- colnames(counts_reduced_to_study)[3:length(counts_reduced_to_study)]
+
+countsStudySampleOnly_collapseByGene <- counts_reduced_to_study %>%
+  select(-transcript_id) %>%
+  group_by(gene_id) %>%
+  summarise_at(samples, mean, na.rm = TRUE) %>%
+  as.data.frame()
+
+rownames(countsStudySampleOnly_collapseByGene) <- countsStudySampleOnly_collapseByGene$gene_id
+
+countsStudySampleOnly_collapseByGene <- countsStudySampleOnly_collapseByGene %>%
+  select(-gene_id)
+
+```
+
+```{r prepare metadata}
+
+rownames(metadataRNASeqOnly) <- filtCountMap$Nextflow_specimenIDs
+metadataRNASeqOnly$Nextflow_specimenIDs <- rownames(metadataRNASeqOnly)
+
+# sex, age, tissue
+
+```
+
+```{r include=FALSE}
+
+
+metadataRNASeqOnly_renamed <- metadataRNASeqOnly %>%
+  dplyr::rename(age = ageDeath)
+
+metadataRNASeqOnly_renamed$genotype <- metadataRNASeqOnly_renamed$genotype %>%
+  as.factor()
+
+stratifications <- split(metadataRNASeqOnly_renamed, list(metadataRNASeqOnly_renamed$sex, metadataRNASeqOnly_renamed$age, metadataRNASeqOnly_renamed$tissue))
+
+for(i in 1:length(stratifications)) {
+  print(stratifications[[i]])
+}
+
+metadataStrata <- stratifications[[1]]
+countsStrata <- countsStudySampleOnly_collapseByGene %>%
+  select(metadataStrata$Nextflow_specimenIDs)
+
+write.csv(metadataStrata, "metadataStrataEX.csv", row.names = FALSE)
+write.csv(countsStrata, "countsStrataEx.csv", row.names = FALSE)
+
+```
+```{r runDeseq2 design}
+
+runDeseq2 <- function(counts, metadataStrata) {
+  
+  countsStrata <- counts %>%
+  select(metadataStrata$Nextflow_specimenIDs)
+  
+  dds <- DESeqDataSetFromMatrix(countData = round(countsStrata),
+                                colData = metadataStrata,
+                                design= ~ genotype)
+  
+  design(dds) <- formula(~ genotype)
+
+  dds <- DESeq(dds)
+
+  return(dds)
+}
+
+```
+
+```{r dataframe output}
+
+createDataFrameOutput <- function(dds, metadataStrata, control, treatment) {
+  
+  metadataRow <- metadataStrata %>%
+    dplyr::distinct(sex, age, tissue) %>%
+    mutate(strain = treatment)
+  
+  res <- results(dds, contrast = c("genotype", treatment, control))
+  
+  res_df <- as.data.frame(res) %>%
+    select(log2FoldChange, pvalue, padj) %>%
+    filter(!is.na(log2FoldChange), !is.na(pvalue), !is.na(padj)) %>%
+    mutate(geneID = rownames(.))
+  
+  # may need to change filter
+  
+  rownames(res_df) <- NULL
+  
+  metadataRow <- metadataRow %>%
+    dplyr::distinct(sex, age, tissue) %>%
+    mutate(strain = treatment)
+  
+  metadataRowExpanded <- do.call("rbind", replicate(nrow(res_df), metadataRow, simplify = FALSE))
+  
+  rownames(metadataRowExpanded) <- NULL
+  
+  final <- cbind(metadataRowExpanded, res_df) %>%
+    dplyr::select(strain, sex, age, tissue, geneID, log2FoldChange, pvalue, padj)
+  
+  return(final)
+}
+
+```
+
+```{r run all stratifications, include=FALSE}
+
+for(x in stratifications) {
+  dds <- runDeseq2(counts = countsStudySampleOnly_collapseByGene, metadataStrata = x)
+  
+  df <- createDataFrameOutput(dds = dds, metadataStrata = x, control = "3XTg-AD_noncarrier", treatment = "3xTg-AD_homozygous")
+  
+  write.csv(df, paste0(df$sex %>% unique(), "_", df$age %>% unique(), "mon_", df$tissue %>% unique(), "_", x$specimenIdSource %>% unique(), ".csv"), row.names = FALSE)
+}
+
+```
+
+```{r functions to combine and test against historical data}
+
+# combine shared gene ids
+
+mergeOutput <- function(SageOupout, UCIOutput) {
+  log2FoldChangeSage <- SageOupout %>%
+    dplyr::rename(log2FoldChangeSage = log2FoldChange) %>%
+    select(geneID, log2FoldChangeSage)
+  
+  log2FoldChangeUCI <- UCIOutput %>%
+    dplyr::rename(log2FoldChangeUCI = log2FoldChange) %>%
+    select(geneID, log2FoldChangeUCI)
+  
+  combined <-
+    inner_join(log2FoldChangeSage, log2FoldChangeUCI, by = "geneID")
+  
+  return(combined)
+}
+
+```
+
+```{r plot Sage versus UCI center data example}
+
+combined <- mergeOutput(SageOupout = read.csv("female_4mon_hippocampus_UCI_TMF.csv"), UCIOutput = read.csv("notSageProcessed/Female_4mon_hippocampus_UCI.csv"))
+
+ggplot(combined, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+ggsave("female_4mon_hippocampus_UCIandSageProcessed.png")
+
+cor(combined$log2FoldChangeSage, combined$log2FoldChangeUCI)
+
+```
+
