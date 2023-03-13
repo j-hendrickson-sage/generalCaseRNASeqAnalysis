@@ -1,0 +1,92 @@
+---
+title: "5XFAD_samples"
+author: "Jared Hendrickson"
+date: "2023-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clear workspace and load r packages, include=FALSE}
+
+rm(list = ls())
+
+library(tidyverse)
+library(DESeq2)
+library(glue)
+library(synapser)
+
+# log into Synapse
+
+synLogin()
+
+```
+
+```{r samplesheet preparation in Nextflow}
+
+studiesRepresented <- c("Jax.IU.Pitt_5XFAD")
+
+y <- paste0("'", studiesRepresented, "'")
+x <- paste(y, collapse = ",")
+
+input <- synTableQuery(glue("select * from syn11346063 WHERE (\"study\" HAS ({x})) AND (\"assay\" HAS ('rnaSeq')) AND (\"fileFormat\" = 'fastq')"))
+
+data <- read.csv(input$filepath)
+
+# sanity checks
+
+data$name %>%
+  length()
+
+data$name %>%
+  unique() %>%
+  length()
+
+
+data$specimenID %>%
+  unique() %>%
+  length()
+
+data$individualID %>%
+  unique() %>%
+  length()
+
+# some wrangling/testing
+
+test <- data %>%
+  filter(!str_detect(name, "R")) %>%
+  select(name) %>%
+  mutate(name = name %>% str_replace_all("_1", "_R1")) %>%
+  mutate(name = name %>% str_replace_all("_2", "_R2"))
+
+# create map between original names and RNAseq pipeine acceptable names
+
+neededData <- data %>%
+  select(sample = specimenID, name, id) %>%
+  mutate(OriginalSample = sample) %>%
+  mutate(sample = sample %>% str_remove_all(",") %>% str_remove_all("\\(") %>% str_remove_all("\\)"))
+
+write.csv(neededData, "neededData.csv", row.names = FALSE)
+
+neededData <- neededData %>%
+  select(sample, name, id)
+
+fastq1 <- neededData %>%
+  filter(str_detect(name, "R1|_1\\.")) %>%
+  mutate(fastq1 = paste0("syn://", id)) %>%
+  select(sample, fastq1)
+
+fastq2 <- neededData %>%
+  filter(str_detect(name, "R2|_2\\.")) %>%
+  mutate(fastq2 = paste0("syn://", id)) %>%
+  select(sample, fastq2)
+
+sampleSheet <- left_join(fastq1, fastq2, by = "sample") %>%
+  mutate(strandedness = "auto") %>%
+  dplyr::rename(fastq_1 = fastq1, fastq_2 = fastq2)
+
+write.csv(sampleSheet, "studyManifestSampleSheet5XFADSamples.csv", row.names = FALSE)
+
+```

@@ -1,0 +1,198 @@
+---
+title: "EdgeRPilotAnalysis"
+author: "Jared Hendrickson"
+date: "2023-02-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clear workspace}
+
+rm(list = ls())
+
+```
+
+```{r eval=FALSE, include=FALSE}
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("edgeR")
+
+```
+
+```{r load r packages}
+
+library(tidyverse)
+library(edgeR)
+
+# https://web.stanford.edu/class/bios221/labs/rnaseq/lab_4_rnaseq.html
+
+```
+
+```{r}
+
+metadataStrata <- read.csv("metadataStrataEX.csv", stringsAsFactors = FALSE)
+countsStrata <- read.csv("countsStrataEx.csv", stringsAsFactors = FALSE)
+
+```
+
+```{r}
+
+rownames(countsStrata) <- countsStrata$X
+countsStrata$X <- NULL
+
+```
+
+```{r}
+
+Groups <- factor(metadataStrata$genotype, levels = c("C57BL6J", "5XFAD"))
+
+```
+
+```{r}
+
+d <- DGEList(counts=countsStrata,group=factor(Groups))
+
+d
+
+```
+
+```{r}
+
+dim(d)
+
+```
+```{r}
+
+d.full <- d # keep the old one in case we mess up
+head(d$counts)
+
+```
+```{r}
+
+head(cpm(d))
+
+```
+
+```{r}
+
+apply(d$counts, 2, sum)
+
+```
+```{r}
+
+keep <- rowSums(cpm(d)>10) >= 2
+d <- d[keep,]
+dim(d)
+
+```
+
+```{r}
+
+d$samples$lib.size <- colSums(d$counts)
+d$samples
+
+```
+
+```{r}
+
+d <- calcNormFactors(d)
+d
+
+```
+```{r}
+
+plotMDS(d, method="bcv", col=as.numeric(d$samples$group))
+legend("bottomleft", as.character(unique(d$samples$group)), col=1:3, pch=20)
+
+```
+
+```{r}
+
+d1 <- estimateCommonDisp(d, verbose=T)
+
+```
+```{r}
+
+names(d1)
+
+```
+```{r}
+
+d1 <- estimateTagwiseDisp(d1)
+names(d1)
+
+```
+```{r}
+
+plotBCV(d1)
+
+```
+
+```{r}
+
+design.mat <- model.matrix(~ 0 + d$samples$group)
+colnames(design.mat) <- levels(d$samples$group)
+d2 <- estimateGLMCommonDisp(d,design.mat)
+d2 <- estimateGLMTrendedDisp(d2,design.mat, method="power")
+# You can change method to "auto", "bin.spline", "power", "spline", "bin.loess".
+# The default is "auto" which chooses "bin.spline" when > 200 tags and "power" otherwise.
+d2 <- estimateGLMTagwiseDisp(d2,design.mat)
+plotBCV(d2)
+
+```
+
+```{r}
+
+et12 <- exactTest(d1, pair=c(1,2)) # compare groups 1 and 2
+topTags(et12, n=10)
+
+df <- topTags(et12, n=100000)$table
+
+```
+
+```{r}
+
+de1 <- decideTestsDGE(et12, adjust.method="BH", p.value=0.05)
+summary(de1)
+
+```
+
+```{r comparison}
+
+output <- read.csv("female_4mon_cerebral cortex_UCI.csv", stringsAsFactors = FALSE)
+
+df$gene_ids <- rownames(df)
+
+```
+
+```{r}
+
+log2FoldChangeEdger <- df %>%
+  dplyr::rename(log2FoldChangeEdger = logFC) %>%
+  select(geneID = gene_ids, log2FoldChangeEdger)
+
+log2FoldChangeDeseq2 <- output %>%
+  dplyr::rename(log2FoldChangeDeseq2 = log2FoldChange) %>%
+  select(geneID, log2FoldChangeDeseq2)
+
+combined <-
+  inner_join(log2FoldChangeEdger, log2FoldChangeDeseq2, by = "geneID")
+
+```
+
+```{r}
+
+ggplot(combined, aes(x = log2FoldChangeEdger, y = log2FoldChangeDeseq2)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+ggsave("female_4mon_cerebral cortex_UCI_EdgRDeseq2.png")
+
+cor(combined$log2FoldChangeEdger, combined$log2FoldChangeDeseq2)
+
+```

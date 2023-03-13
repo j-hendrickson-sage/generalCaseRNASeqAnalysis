@@ -1,0 +1,306 @@
+---
+title: "Deseq2PilotAnalysis"
+author: "Jared Hendrickson"
+date: "2023-02-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clear workspace}
+
+rm(list = ls())
+
+```
+
+```{r load r packages}
+
+library(tidyverse)
+library(DESeq2)
+
+```
+
+```{r}
+
+counts <- read.csv("RNAseqCountsTable.csv")
+UCI_5xFAD_Metadata <- read.csv("UCI_5XFAD_joinedMetadata.csv")
+
+```
+
+```{r}
+
+trimX <- function(specimenID) {
+  if(substr(specimenID, 1, 1) == "X") {
+    return(substr(specimenID, 2, nchar(specimenID)))
+  }
+  else {
+    return(specimenID)
+  }
+}
+
+replacePeriod <- function(specimenID) {
+  return(str_replace(specimenID, "\\.", "-"))
+}
+
+```
+
+```{r}
+
+originalNameMap <- read.csv("neededData.csv")
+
+```
+
+```{r check}
+
+countMap <- data.frame(Nextflow_specimenIDs = colnames(counts), inputSpecimenIDS = NA)
+
+countMap <- countMap %>%
+  filter(!(Nextflow_specimenIDs %in% c("transcript_id", "gene_id")))
+
+for(i in 1:nrow(countMap)) {
+  countMap[i, "inputSpecimenIDS"] <- countMap[i, "Nextflow_specimenIDs"] %>% 
+    trimX() %>% 
+    replacePeriod()
+}
+
+
+# sanity checks
+
+intersect(countMap$inputSpecimenIDS, originalNameMap$sample) %>%
+  length()
+
+setdiff(countMap$inputSpecimenIDS, originalNameMap$sample) %>%
+  length()
+
+setdiff(originalNameMap$sample, countMap$inputSpecimenIDS) %>%
+  length()
+
+# sanity check fastq specimen ids and biospecimen specimen ids
+
+```
+
+
+```{r}
+
+# metadata tests
+
+originalNameMap$SampleWrangled <- originalNameMap$OriginalSample %>% 
+  str_remove_all("_RNAseq") %>% 
+  str_to_lower()
+
+UCI_5xFAD_Metadata$specimenIDWrangled <- UCI_5xFAD_Metadata$specimenID %>%
+  str_remove_all("r") %>% 
+  str_to_lower()
+
+intersect(originalNameMap$SampleWrangled, UCI_5xFAD_Metadata$specimenIDWrangled)
+
+UCI_5xFAD_Metadata_RNAseqOnly <- UCI_5xFAD_Metadata %>%
+  filter(specimenIDWrangled %in% intersect(originalNameMap$SampleWrangled, UCI_5xFAD_Metadata$specimenIDWrangled))
+
+UCI_5xFAD_metadata_map <- inner_join(UCI_5xFAD_Metadata_RNAseqOnly, originalNameMap %>% select(OriginalSample, sample, SampleWrangled) %>% distinct(OriginalSample, sample, SampleWrangled), by = c("specimenIDWrangled" = "SampleWrangled")) %>%
+  select(-specimenIDWrangled) %>%
+  inner_join(countMap, by = c("sample" = "inputSpecimenIDS"))
+
+```
+
+```{r reduce counts matrix to UCI 5XFAD study only}
+
+counts_UCI_5XFAD_only <- counts %>%
+  select(transcript_id, gene_id, UCI_5xFAD_metadata_map$Nextflow_specimenIDs)
+
+```
+
+```{r prepare counts}
+
+samples <- colnames(counts_UCI_5XFAD_only)[3:length(counts_UCI_5XFAD_only)]
+
+counts_UCI_5XFAD_only_collapseByGene <- counts_UCI_5XFAD_only %>%
+  select(-transcript_id) %>%
+  group_by(gene_id) %>%
+  summarise_at(samples, sum, na.rm = TRUE) %>%
+  as.data.frame()
+
+rownames(counts_UCI_5XFAD_only_collapseByGene) <- counts_UCI_5XFAD_only_collapseByGene$gene_id
+
+counts_UCI_5XFAD_only_collapseByGene <- counts_UCI_5XFAD_only_collapseByGene %>%
+  select(-gene_id)
+
+```
+
+```{r prepare metadata}
+
+rownames(UCI_5xFAD_metadata_map) <- UCI_5xFAD_metadata_map$Nextflow_specimenIDs
+
+# sex, age, tissue
+
+```
+
+```{r}
+
+UCI_5xFAD_metadata_map_renamed <- UCI_5xFAD_metadata_map %>%
+  dplyr::rename(genotype = individualCommonGenotype, age = ageDeath)
+
+UCI_5xFAD_metadata_map_renamed$genotype <- UCI_5xFAD_metadata_map_renamed$genotype %>%
+  as.factor()
+
+stratifications <- split(UCI_5xFAD_metadata_map_renamed, list(UCI_5xFAD_metadata_map_renamed$sex, UCI_5xFAD_metadata_map_renamed$age, UCI_5xFAD_metadata_map_renamed$tissue))
+
+for(i in 1:length(stratifications)) {
+  print(stratifications[[i]])
+}
+
+metadataStrata <- stratifications[[1]]
+countsStrata <- counts_UCI_5XFAD_only_collapseByGene %>%
+  select(metadataStrata$Nextflow_specimenIDs)
+
+write.csv(metadataStrata, "metadataStrataEX.csv", row.names = FALSE)
+write.csv(countsStrata, "countsStrataEx.csv", row.names = TRUE)
+
+```
+
+```{r}
+
+runDeseq2 <- function(counts, metadataStrata) {
+  
+  countsStrata <- counts %>%
+  select(metadataStrata$Nextflow_specimenIDs)
+  
+  dds <- DESeqDataSetFromMatrix(countData = round(countsStrata),
+                                colData = metadataStrata,
+                                design= ~ genotype)
+  
+  design(dds) <- formula(~ genotype)
+
+  dds <- DESeq(dds)
+
+  return(dds)
+}
+
+```
+
+```{r}
+
+createDataFrameOutput <- function(dds, metadataStrata, control, treatment) {
+  
+  metadataRow <- metadataStrata %>%
+    dplyr::distinct(sex, age, tissue) %>%
+    mutate(strain = treatment)
+  
+  res <- results(dds, contrast = c("genotype", treatment, control))
+  
+  res_df <- as.data.frame(res) %>%
+    select(log2FoldChange, pvalue, padj) %>%
+    filter(!is.na(log2FoldChange), !is.na(pvalue), !is.na(padj)) %>%
+    mutate(geneID = rownames(.))
+  
+  rownames(res_df) <- NULL
+  
+  metadataRow <- metadataRow %>%
+    dplyr::distinct(sex, age, tissue) %>%
+    mutate(strain = treatment)
+  
+  metadataRowExpanded <- do.call("rbind", replicate(nrow(res_df), metadataRow, simplify = FALSE))
+  
+  rownames(metadataRowExpanded) <- NULL
+  
+  final <- cbind(metadataRowExpanded, res_df) %>%
+    dplyr::select(strain, sex, age, tissue, geneID, log2FoldChange, pvalue, padj)
+  
+  return(final)
+}
+
+```
+
+```{r}
+
+for(x in stratifications) {
+  dds <- runDeseq2(counts = counts_UCI_5XFAD_only_collapseByGene, metadataStrata = x)
+  
+  df <- createDataFrameOutput(dds = dds, metadataStrata = x, control = "C57BL6J", treatment = "5XFAD")
+  
+  write.csv(df, paste0(df$sex %>% unique(), "_", df$age %>% unique(), "mon_", df$tissue %>% unique(), "_UCI.csv"), row.names = TRUE)
+  
+  #specimenidSource in metadata
+  #study
+}
+
+```
+
+```{r}
+
+# combine shared gene ids
+
+mergeOutput <- function(SageOupout, UCIOutput) {
+  log2FoldChangeSage <- SageOupout %>%
+    dplyr::rename(log2FoldChangeSage = log2FoldChange) %>%
+    select(geneID, log2FoldChangeSage)
+  
+  log2FoldChangeUCI <- UCIOutput %>%
+    dplyr::rename(log2FoldChangeUCI = log2FoldChange) %>%
+    select(geneID, log2FoldChangeUCI)
+  
+  combined <-
+    inner_join(log2FoldChangeSage, log2FoldChangeUCI, by = "geneID")
+  
+  return(combined)
+}
+
+```
+
+```{r}
+
+combined <- mergeOutput(SageOupout = read.csv("female_4mon_cerebral cortex_UCI.csv"), UCIOutput = read.csv("notSageProcessed/Female_4mon_cortex_UCI.csv"))
+
+ggplot(combined, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+cor(combined$log2FoldChangeSage, combined$log2FoldChangeUCI)
+
+ggsave("Female_4mon_cortex_UCI.png")
+
+```
+
+```{r}
+
+combined <- mergeOutput(SageOupout = read.csv("Male_8mon_hippocampus_UCI.csv"), UCIOutput = read.csv("notSageProcessed/Male_8mon_hippocampus_UCI.csv"))
+
+ggplot(combined, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+cor(combined$log2FoldChangeSage, combined$log2FoldChangeUCI)
+
+ggsave("Male_8mon_hippocampus_UCI.png")
+
+```
+
+```{r}
+
+combined <- mergeOutput(SageOupout = read.csv("female_18mon_hippocampus_UCI.csv"), UCIOutput = read.csv("notSageProcessed/Female_18mon_hippocampus_UCI.csv"))
+
+ggplot(combined, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+cor(combined$log2FoldChangeSage, combined$log2FoldChangeUCI)
+
+ggsave("Female_18mon_hippocampus_UCI.png")
+
+```
+
+```{r}
+
+combined <- mergeOutput(SageOupout = read.csv("female_18mon_hippocampus_UCI.csv"), UCIOutput = read.csv("female_4mon_cerebral cortex_UCI.csv"))
+
+ggplot(combined, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+ggsave("Female_18mon_hippocampus_UCI_Sage_versus_female_4mon_cerebral cortex_UCI.png")
+
+cor(combined$log2FoldChangeSage, combined$log2FoldChangeUCI)
+
+```
