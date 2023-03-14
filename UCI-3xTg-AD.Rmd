@@ -147,7 +147,7 @@ for(i in 1:length(stratifications)) {
 }
 
 metadataStrata <- stratifications[[1]]
-countsStrata <- counts_UCI_UCI_3xTg_AD_only_collapseByGene %>%
+countsStrata <- counts_UCI_3xTg_AD_only_collapseByGene %>%
   select(metadataStrata$Nextflow_specimenIDs)
 
 write.csv(metadataStrata, "metadataStrataEX.csv", row.names = FALSE)
