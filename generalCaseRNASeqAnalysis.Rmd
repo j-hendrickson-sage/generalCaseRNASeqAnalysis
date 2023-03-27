@@ -3,24 +3,40 @@ title: "generalCaseRNASeqAnalysis"
 author: "Jared Hendrickson"
 date: "2023-02-27"
 output: html_document
+params:
+  study: "UCI_3xTg-AD"
+  control: "B6129F3"
+  treatment: "3xTg-AD"
+  synapseusername: "jaredhendrickson"
+  synapsepassword: "Jarebear198933*"
 ---
+
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 ```
 
 ```{r clear workspace and load r packages, include=FALSE}
-
-rm(list = ls())
 
 library(tidyverse)
 library(DESeq2)
 library(glue)
 library(synapser)
+library(reticulate)
 
 # log into Synapse
 
 synLogin()
+
+```
+
+```{r}
+
+source_python("captureMetadataReticulate.py")
+
+saveMetadata(params$synapseusername, params$synapsepassword, params$study)
 
 ```
 
@@ -147,7 +163,7 @@ setdiff(originalNameMap$sample, countMap$inputSpecimenIDS) %>%
 
 ```{r load metadata}
 
-metadata <- read.csv("UCI_3xTg-AD_joinedMetadata.csv", stringsAsFactors = FALSE)
+metadata <- read.csv(paste0(params$study, "_", "joinedMetadata.csv"), stringsAsFactors = FALSE)
 
 ```
 
@@ -211,7 +227,7 @@ metadataRNASeqOnly$Nextflow_specimenIDs <- rownames(metadataRNASeqOnly)
 metadataRNASeqOnly_renamed <- metadataRNASeqOnly %>%
   dplyr::rename(age = ageDeath)
 
-metadataRNASeqOnly_renamed$genotype <- metadataRNASeqOnly_renamed$genotype %>%
+metadataRNASeqOnly_renamed$genotype <- metadataRNASeqOnly_renamed$individualCommonGenotype %>%
   as.factor()
 
 stratifications <- split(metadataRNASeqOnly_renamed, list(metadataRNASeqOnly_renamed$sex, metadataRNASeqOnly_renamed$age, metadataRNASeqOnly_renamed$tissue))
@@ -228,6 +244,7 @@ write.csv(metadataStrata, "metadataStrataEX.csv", row.names = FALSE)
 write.csv(countsStrata, "countsStrataEx.csv", row.names = FALSE)
 
 ```
+
 ```{r runDeseq2 design}
 
 runDeseq2 <- function(counts, metadataStrata) {
@@ -285,12 +302,14 @@ createDataFrameOutput <- function(dds, metadataStrata, control, treatment) {
 
 ```{r run all stratifications, include=FALSE}
 
+dir.create(params$study)
+
 for(x in stratifications) {
   dds <- runDeseq2(counts = countsStudySampleOnly_collapseByGene, metadataStrata = x)
   
-  df <- createDataFrameOutput(dds = dds, metadataStrata = x, control = "3XTg-AD_noncarrier", treatment = "3xTg-AD_homozygous")
+  df <- createDataFrameOutput(dds = dds, metadataStrata = x, control = params$control, treatment = params$treatment)
   
-  write.csv(df, paste0(df$sex %>% unique(), "_", df$age %>% unique(), "mon_", df$tissue %>% unique(), "_", x$specimenIdSource %>% unique(), ".csv"), row.names = FALSE)
+  write.csv(df, paste0(params$study, "/", df$sex %>% unique(), "_", df$age %>% unique(), "mon_", df$tissue %>% unique(), "_", x$specimenIdSource %>% unique(), ".csv"), row.names = FALSE)
 }
 
 ```
@@ -330,3 +349,42 @@ cor(combined$log2FoldChangeSage, combined$log2FoldChangeUCI)
 
 ```
 
+```{r}
+
+res <- resid(mod <- lm(log2FoldChangeSage ~ log2FoldChangeUCI, data = combined))
+
+res.qt <- quantile(res, probs = c(0.001,0.999))
+
+want <- which(res >= res.qt[1] & res <= res.qt[2])
+
+```
+
+```{r}
+
+outliers <- combined[-want,]
+within <- combined[want,]
+
+ggplot(within, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+ggsave("MainData.png")
+
+ggplot(outliers, aes(x = log2FoldChangeUCI, y = log2FoldChangeSage)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+ggsave("outliers.png")
+
+```
+```{r}
+
+SageOutput = read.csv("female_4mon_hippocampus_UCI_TMF.csv")
+UCIOutput = read.csv("notSageProcessed/Female_4mon_hippocampus_UCI.csv")
+
+testSage <- SageOutput %>% 
+  filter(geneID %in% outliers$geneID)
+testUCI <- UCIOutput %>% 
+  filter(geneID %in% outliers$geneID)
+
+```
