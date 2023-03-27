@@ -7,8 +7,8 @@ params:
   study: "UCI_3xTg-AD"
   control: "B6129F3"
   treatment: "3xTg-AD"
-  synapseusername: "jaredhendrickson"
-  synapsepassword: "Jarebear198933*"
+  synapseusername: "***"
+  synapsepassword: "***"
 ---
 
 
@@ -32,7 +32,7 @@ synLogin()
 
 ```
 
-```{r}
+```{r save }
 
 source_python("captureMetadataReticulate.py")
 
