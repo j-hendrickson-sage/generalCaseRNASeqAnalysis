@@ -1,0 +1,66 @@
+---
+title: "assignProvenance"
+author: "Jared Hendrickson"
+date: "2023-03-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{python}
+
+from synapseclient import Activity
+import os
+import synapseclient
+from synapseclient import Project, Folder, File, Link
+
+syn = synapseclient.Synapse()
+
+syn.login(authToken = "eyJ0eXAiOiJKV1QiLCJraWQiOiJXN05OOldMSlQ6SjVSSzpMN1RMOlQ3TDc6M1ZYNjpKRU9VOjY0NFI6VTNJWDo1S1oyOjdaQ0s6RlBUSCIsImFsZyI6IlJTMjU2In0.eyJhY2Nlc3MiOnsic2NvcGUiOlsidmlldyIsImRvd25sb2FkIiwibW9kaWZ5Il0sIm9pZGNfY2xhaW1zIjp7fX0sInRva2VuX3R5cGUiOiJQRVJTT05BTF9BQ0NFU1NfVE9LRU4iLCJpc3MiOiJodHRwczovL3JlcG8tcHJvZC00MjgtMC5wcm9kLnNhZ2ViYXNlLm9yZy9hdXRoL3YxIiwiYXVkIjoiMCIsIm5iZiI6MTY2NzI1ODk1MSwiaWF0IjoxNjY3MjU4OTUxLCJqdGkiOiIyMjA1Iiwic3ViIjoiMzQ0ODMyNiJ9.dzw20qLAlmw8fcEPfRTzyxhBqA0ywWT3x39z29wNDvRZY_qixZ7UsTGq45qAtYVlyxY7Lh4ESaAQIEKmaGMhm5ChfMIU1rzRKuI83UdVs95gLIySmllaud6eikD_YqQpquhg8WzVPrURepo3kR3ZhbakkTEktz3bfHC3pDYZRj2E3jWo0J2UIBkUYnijkTPTgk9iDSXB4hUv1Da-59gyXEwoVfw83VNxahfswID-jc0AOcTrHj254kYC58gm2cZa_uOKX1PdfuosrMGQ8kQw5Ahr0aMLrXuuI240lOj_5f_LsJecCqqi0vOTg4Kf4yt-ycARrXWMJiRyfcKgW5ZzgA")
+
+act = Activity(name='process pipeline', description='nf-core rnaseq pipeline')
+act.used(['syn51063396'])
+act.executed('https://github.com/nf-core/rnaseq')
+
+test_entity = File('rsem.merged.gene_counts.tsv', description='process to gene counts', parent='syn51040095')
+test_entity = syn.store(test_entity, activity=act)
+
+```
+
+
+
+```{python}
+
+syn = synapseclient.Synapse()
+
+```
+
+
+
+```{python}
+
+from synapseclient import Activity
+import os
+
+syn = synapseclient.Synapse()
+
+syn.login(authToken = "eyJ0eXAiOiJKV1QiLCJraWQiOiJXN05OOldMSlQ6SjVSSzpMN1RMOlQ3TDc6M1ZYNjpKRU9VOjY0NFI6VTNJWDo1S1oyOjdaQ0s6RlBUSCIsImFsZyI6IlJTMjU2In0.eyJhY2Nlc3MiOnsic2NvcGUiOlsidmlldyIsImRvd25sb2FkIiwibW9kaWZ5Il0sIm9pZGNfY2xhaW1zIjp7fX0sInRva2VuX3R5cGUiOiJQRVJTT05BTF9BQ0NFU1NfVE9LRU4iLCJpc3MiOiJodHRwczovL3JlcG8tcHJvZC00MjgtMC5wcm9kLnNhZ2ViYXNlLm9yZy9hdXRoL3YxIiwiYXVkIjoiMCIsIm5iZiI6MTY2NzI1ODk1MSwiaWF0IjoxNjY3MjU4OTUxLCJqdGkiOiIyMjA1Iiwic3ViIjoiMzQ0ODMyNiJ9.dzw20qLAlmw8fcEPfRTzyxhBqA0ywWT3x39z29wNDvRZY_qixZ7UsTGq45qAtYVlyxY7Lh4ESaAQIEKmaGMhm5ChfMIU1rzRKuI83UdVs95gLIySmllaud6eikD_YqQpquhg8WzVPrURepo3kR3ZhbakkTEktz3bfHC3pDYZRj2E3jWo0J2UIBkUYnijkTPTgk9iDSXB4hUv1Da-59gyXEwoVfw83VNxahfswID-jc0AOcTrHj254kYC58gm2cZa_uOKX1PdfuosrMGQ8kQw5Ahr0aMLrXuuI240lOj_5f_LsJecCqqi0vOTg4Kf4yt-ycARrXWMJiRyfcKgW5ZzgA")
+
+act = Activity(name='process pipeline', description='nf-core rnaseq pipeline')
+act.used(['syn51200765'])
+act.executed('https://github.com/j-hendrickson-sage/generalCaseRNASeqAnalysis/blob/main/generalCaseRNASeqAnalysis.Rmd')
+    
+import synapseclient
+from synapseclient import Project, Folder, File, Link
+
+data_folder = Folder('UCI_3xTg-AD', parent='syn51040095')
+data_folder = syn.store(data_folder)
+
+for x in os.listdir('UCI_3xTg-AD'):
+  test_entity = File('UCI_3xTg-AD/' + x, description='differential expression', parent=data_folder)
+  test_entity = syn.store(test_entity, activity=act)
+
+```
