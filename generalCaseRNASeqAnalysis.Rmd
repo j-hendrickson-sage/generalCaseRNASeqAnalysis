@@ -9,14 +9,19 @@ params:
   treatment: "3xTg-AD"
   synapseusername: "***"
   synapsepassword: "***"
+  geneCountsTableSynID: "syn51200765"
+  MODELADHarmonizationSynID: "syn51040095"
 ---
 
 
 
 ```{r setup, include=FALSE}
+
 knitr::opts_chunk$set(echo = TRUE)
 
 ```
+
+### These are the minimal required packages
 
 ```{r clear workspace and load r packages, include=FALSE}
 
@@ -28,17 +33,20 @@ library(reticulate)
 
 # log into Synapse
 
-synLogin()
+synLogin(params$synapseusername, params$synapsepassword)
 
 ```
 
-```{r save }
+### Use external python file to pull metadata
+
+```{r save metadata for study}
 
 source_python("captureMetadataReticulate.py")
 
 saveMetadata(params$synapseusername, params$synapsepassword, params$study)
 
 ```
+### Samplesheet preparation in Nextflow
 
 ```{r samplesheet preparation in Nextflow}
 
@@ -59,7 +67,6 @@ data$name %>%
 data$name %>%
   unique() %>%
   length()
-
 
 data$specimenID %>%
   unique() %>%
@@ -84,6 +91,7 @@ neededData <- data %>%
   mutate(OriginalSample = sample) %>%
   mutate(sample = sample %>% str_remove_all(",") %>% str_remove_all("\\(") %>% str_remove_all("\\)"))
 
+# raw data pulled from Synapse table to be wrangled for samplesheet
 write.csv(neededData, "neededData.csv", row.names = FALSE)
 
 neededData <- neededData %>%
@@ -106,14 +114,18 @@ sampleSheet <- left_join(fastq1, fastq2, by = "sample") %>%
 write.csv(sampleSheet, "studyManifestSampleSheet.csv", row.names = FALSE)
 
 ```
-
+### Load gene counts file and raw data pulled from studies represented Synapse table
 
 ```{r load RSEM counts from nf-core rnaseq pipeline}
 
-counts <- read.csv("RNAseqCountsTable.csv")
+fileEntity <- synGet(params$geneCountsTableSynID)
+counts <- read.csv(fileEntity$path, sep = "\t")
+
 originalNameMap <- read.csv("neededData.csv")
 
 ```
+### Nextflow pipeline renames some specimen ids
+### Wrangling functions to map back
 
 ```{r functions to transform specimenIDs in counts matrix to inputted specimenIDs}
 
@@ -131,6 +143,9 @@ replacePeriod <- function(specimenID) {
 }
 
 ```
+
+### Wrangle Nextflow gene counts specimen ids
+### Do some sanity checks
 
 ```{r checks}
 
@@ -159,13 +174,15 @@ setdiff(originalNameMap$sample, countMap$inputSpecimenIDS) %>%
 # future development: sanity check fastq specimen ids and biospecimen specimen ids
 
 ```
-
+### Load study metadata
 
 ```{r load metadata}
 
 metadata <- read.csv(paste0(params$study, "_", "joinedMetadata.csv"), stringsAsFactors = FALSE)
 
 ```
+
+### More Tests/intersect length should be number of RNAseq samples in study
 
 ```{r general intersect tests}
 
@@ -177,6 +194,7 @@ intersect(metadata$specimenID, countMap$inputSpecimenIDS)
 intersect(metadata$specimenID, countMap$inputSpecimenIDS) %>% length()
 
 ```
+### Only include metadata that we have rnaseq data for
 
 ```{r only include metadata that we have rnaseq data for}
 
@@ -185,32 +203,33 @@ metadataRNASeqOnly <- metadata %>%
 
 ```
 
+
+### Reduce counts matrix to study samples only
+
 ```{r reduce counts matrix to study samples only}
 
 filtCountMap <- countMap %>%
   filter(inputSpecimenIDS %in% metadataRNASeqOnly$specimenID)
 
 counts_reduced_to_study <- counts %>%
-  select(transcript_id, gene_id, filtCountMap$Nextflow_specimenIDs)
+  select(gene_id, filtCountMap$Nextflow_specimenIDs)
 
 ```
+
+### Prepare gene counts table for Deseq2
 
 ```{r prepare counts}
 
 samples <- colnames(counts_reduced_to_study)[3:length(counts_reduced_to_study)]
 
-countsStudySampleOnly_collapseByGene <- counts_reduced_to_study %>%
-  select(-transcript_id) %>%
-  group_by(gene_id) %>%
-  summarise_at(samples, sum, na.rm = TRUE) %>%
-  as.data.frame()
+rownames(counts) <- counts$gene_id
 
-rownames(countsStudySampleOnly_collapseByGene) <- countsStudySampleOnly_collapseByGene$gene_id
-
-countsStudySampleOnly_collapseByGene <- countsStudySampleOnly_collapseByGene %>%
+counts <- counts %>%
   select(-gene_id)
 
 ```
+
+### Prepare Metadata
 
 ```{r prepare metadata}
 
@@ -221,8 +240,9 @@ metadataRNASeqOnly$Nextflow_specimenIDs <- rownames(metadataRNASeqOnly)
 
 ```
 
-```{r include=FALSE}
+### set up stratifications and test set
 
+```{r set up stratifications and test set}
 
 metadataRNASeqOnly_renamed <- metadataRNASeqOnly %>%
   dplyr::rename(age = ageDeath)
@@ -232,18 +252,20 @@ metadataRNASeqOnly_renamed$genotype <- metadataRNASeqOnly_renamed$individualComm
 
 stratifications <- split(metadataRNASeqOnly_renamed, list(metadataRNASeqOnly_renamed$sex, metadataRNASeqOnly_renamed$age, metadataRNASeqOnly_renamed$tissue))
 
-for(i in 1:length(stratifications)) {
-  print(stratifications[[i]])
-}
+# for(i in 1:length(stratifications)) {
+#   print(stratifications[[i]])
+# }
 
 metadataStrata <- stratifications[[1]]
-countsStrata <- countsStudySampleOnly_collapseByGene %>%
+countsStrata <- counts %>%
   select(metadataStrata$Nextflow_specimenIDs)
 
 write.csv(metadataStrata, "metadataStrataEX.csv", row.names = FALSE)
 write.csv(countsStrata, "countsStrataEx.csv", row.names = FALSE)
 
 ```
+
+### Deseq2 Design
 
 ```{r runDeseq2 design}
 
@@ -264,6 +286,8 @@ runDeseq2 <- function(counts, metadataStrata) {
 }
 
 ```
+
+### Output dataframe
 
 ```{r dataframe output}
 
@@ -300,12 +324,14 @@ createDataFrameOutput <- function(dds, metadataStrata, control, treatment) {
 
 ```
 
-```{r run all stratifications, include=FALSE}
+### Run all stratifications
+
+```{r run all stratifications}
 
 dir.create(params$study)
 
 for(x in stratifications) {
-  dds <- runDeseq2(counts = countsStudySampleOnly_collapseByGene, metadataStrata = x)
+  dds <- runDeseq2(counts = counts, metadataStrata = x)
   
   df <- createDataFrameOutput(dds = dds, metadataStrata = x, control = params$control, treatment = params$treatment)
   
@@ -313,6 +339,7 @@ for(x in stratifications) {
 }
 
 ```
+
 
 ```{r functions to combine and test against historical data}
 
@@ -388,3 +415,14 @@ testUCI <- UCIOutput %>%
   filter(geneID %in% outliers$geneID)
 
 ```
+
+### Set Complete Provenance
+
+```{r Set Complete Provenance}
+
+source_python("assignProvenance.py")
+
+setCompleteProvenanceStudy(params$synapseusername, params$synapsepassword, params$study, params$geneCountsTableSynID, params$MODELADHarmonizationSynID)
+
+```
+
